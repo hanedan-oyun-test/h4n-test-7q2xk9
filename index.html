@@ -336,6 +336,9 @@ html,body{position:fixed;left:0;top:0;width:100%;height:var(--app-h);overflow:hi
 /* uzun pencerelerde başlık ve ✕ hep görünür (içerik altından kayar) */
 .sheet>.hd:first-child{position:sticky;top:-14px;z-index:4;margin:-14px -14px 8px;padding:14px 14px 6px;background:inherit;background-attachment:local;border-radius:20px 20px 0 0}
 .card>.hd:first-child{position:sticky;top:-11px;z-index:4;margin:-11px -12px 7px;padding:11px 12px 4px;background:inherit;background-attachment:local}
+/* v6.2: harita dokunuşları tarayıcıya değil oyuna */
+#game,#game canvas{touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.sheet,.card,.treewrap{-webkit-overflow-scrolling:touch}
 </style>
 </head>
 <body class="nogame">
@@ -375,7 +378,8 @@ setTimeout(function(){show(window.LANG==='en'?'timeout (25 s)':'zaman aşımı (
   const View = window.View = {
     w: window.innerWidth, h: window.innerHeight, listeners: [],
     apply() {
-      const s = size(); this.w = s.w; this.h = s.h;
+      if (VV && (VV.scale || 1) > 1.01) return; // sayfa yakınlaşmışsa (engellenemediyse) düzeni bozma, kaydırmayı geri alma
+    const s = size(); this.w = s.w; this.h = s.h;
       const st = document.documentElement.style;
       st.setProperty('--app-h', s.h + 'px'); st.setProperty('--app-w', s.w + 'px'); st.setProperty('--vh', (s.h / 100) + 'px');
       // sayfa hiçbir zaman kaymasın (iOS bazen odak/çubuk değişince belgeyi kaydırır)
@@ -393,7 +397,7 @@ setTimeout(function(){show(window.LANG==='en'?'timeout (25 s)':'zaman aşımı (
   window.addEventListener('resize', sch); window.addEventListener('orientationchange', sch);
   if (VV) { VV.addEventListener('resize', sch); VV.addEventListener('scroll', sch); }
   window.addEventListener('pageshow', sch); document.addEventListener('visibilitychange', () => { if (!document.hidden) sch(); });
-  window.addEventListener('scroll', () => { if (window.scrollX || window.scrollY) window.scrollTo(0, 0); }, { passive: true });
+  window.addEventListener('scroll', () => { if ((!VV || (VV.scale || 1) <= 1.01) && (window.scrollX || window.scrollY)) window.scrollTo(0, 0); }, { passive: true });
   // üst çubuğun alt kenarı: satır sayısı (dar ekranda 2 satır) değişince araçlar ve panel yeniden konumlanır
   View.topEdge = function () {
     const $ = (id) => document.getElementById(id), t = $('top'); if (!t) return;
@@ -431,6 +435,18 @@ setTimeout(function(){show(window.LANG==='en'?'timeout (25 s)':'zaman aşımı (
     View._sa = { top: parseFloat(c.paddingTop) || 0, right: parseFloat(c.paddingRight) || 0, bottom: parseFloat(c.paddingBottom) || 0, left: parseFloat(c.paddingLeft) || 0 }; d.remove();
   };
   View.on(() => { if (document.body) View.readSafe(); View.topEdge(); });
+  // v6.2: tarayıcının kendi sayfa yakınlaştırmasını engelle (iOS Safari user-scalable=no'yu yok sayar).
+  // Sayfa yakınlaşırsa oyun tuvali küçülür ve kaydırma bozulur; iki parmak hareketi oyunun kendi yakınlaştırmasıdır.
+  const stop = (e) => { if (e.cancelable) e.preventDefault(); };
+  for (const ev of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(ev, stop, { passive: false });
+  document.addEventListener('touchmove', (e) => {
+    if (e.touches && e.touches.length > 1) return stop(e);
+    // panel içi kaydırma (teknoloji ağacı, listeler) serbest; harita ve boş alanlar sayfayı kaydırmaz
+    const t = e.target; if (t && t.closest && t.closest('.sheet, .card, .treewrap, #tut .bub')) return;
+    stop(e);
+  }, { passive: false });
+  let lastEnd = 0;
+  document.addEventListener('touchend', (e) => { const now = Date.now(); if (now - lastEnd < 320 && e.target && e.target.closest && e.target.closest('#game')) stop(e); lastEnd = now; }, { passive: false });
   View.apply();
   document.addEventListener('DOMContentLoaded', () => {
     sch(); const t = document.getElementById('top');
@@ -1036,7 +1052,9 @@ window.I18N_EN = {
 "<div class=\"hd\"><h2 style=\"flex:1\">{}Diplomasi</h2>{}</div>": "<div class=\"hd\"><h2 style=\"flex:1\">{}Diplomacy</h2>{}</div>",
 "+45 bilim": "+45 science",
 "+45 bilim.": "+45 science.",
-"{} zaferi: {}": "{} victory: {}"
+"{} zaferi: {}": "{} victory: {}",
+"Ortala": "Center",
+"Ortala: seçili birim/şehir ya da başkent": "Center: selected unit/city or capital"
 };
 
 </script>
@@ -3657,6 +3675,8 @@ class MapScene extends Phaser.Scene {
     this.input.on('pointerdown', (p) => this.onDown(p));
     this.input.on('pointermove', (p) => this.onMove(p));
     this.input.on('pointerup', (p) => this.onUp(p));
+    this.input.on('pointerupoutside', (p) => this.onUp(p));
+    this.game.events.on('blur', () => this.cancelGesture());
     this.input.on('wheel', (p, o, dx, dy) => this.zoomAt(p.x, p.y, this.cam.zoom * (dy > 0 ? 0.88 : 1.14)));
     this.scale.on('resize', () => { this.clampZoom(); this.clampPan(); });
     this.border = this.add.graphics().setDepth(20);
@@ -3700,9 +3720,16 @@ class MapScene extends Phaser.Scene {
   minZoom() { return Math.min(this.scale.width / MAP_W, this.scale.height / MAP_H) * 0.95; }
   clampZoom() { this.cam.setZoom(Phaser.Math.Clamp(this.cam.zoom, this.minZoom(), MAXZ)); }
   s2w(px, py) { const c = this.cam, w = this.scale.width, h = this.scale.height; return [(px - w / 2) / c.zoom + c.scrollX + w / 2, (py - h / 2) / c.zoom + c.scrollY + h / 2]; }
+  // kamera sınırı: harita kaybolmaz; kenar kareleri (panel payıyla) ekranın ortasına getirilebilir; harita sığıyorsa ortada kalır
   clampPan() {
-    const c = this.cam, w = this.scale.width, h = this.scale.height, ins = (typeof UI !== 'undefined' && UI.viewInset) ? UI.viewInset() : { l: 0, b: 0 }, pad = (200 + Math.max(ins.l, ins.b) * DPR * 0.6) / c.zoom;
-    const cx = Phaser.Math.Clamp(c.scrollX + w / 2, -pad, MAP_W + pad), cy = Phaser.Math.Clamp(c.scrollY + h / 2, -pad, MAP_H + pad);
+    const c = this.cam, w = this.scale.width, h = this.scale.height, z = c.zoom, k = DPR / z;
+    const ins = (typeof UI !== 'undefined' && UI.viewInset) ? UI.viewInset() : { l: 0, r: 0, t: 0, b: 0 };
+    const vw = w / z, vh = h / z, pad = Hex.R * 0.5;
+    const axis = (cen, size, view, insLo, insHi) => {
+      if (size + 2 * pad <= view) { const mid = size / 2 - (insLo - insHi) / 2, slack = (view - size) / 4; return Phaser.Math.Clamp(cen, mid - slack, mid + slack); }
+      return Phaser.Math.Clamp(cen, -pad - insLo / 2, size + pad + insHi / 2);
+    };
+    const cx = axis(c.scrollX + w / 2, MAP_W, vw, (ins.l || 0) * k, (ins.r || 0) * k), cy = axis(c.scrollY + h / 2, MAP_H, vh, (ins.t || 0) * k, (ins.b || 0) * k);
     c.scrollX = cx - w / 2; c.scrollY = cy - h / 2;
   }
   zoomAt(px, py, z) {
@@ -3726,30 +3753,54 @@ class MapScene extends Phaser.Scene {
     const W = w / DPR, H = h / DPR, m = 40;
     if (sx < ins.l + m || sx > W - ins.r - m || sy < ins.t + m || sy > H - ins.b - m) this.centerOn(tile);
   }
-  // --- girdi ---
+  // --- girdi (v6.2) ---
+  // Tek parmak/fare: kısa dokunma = seçim; ~9 px'ten fazla kayınca kaydırmaya döner, dokunma iptal olur.
+  // İki parmak: yakınlaştırma + orta noktayla kaydırma. Bir parmak kalkınca kalan parmakla kaydırma sürer.
+  // Dokunulan dünya noktası parmağın altında tutulur (kaydırma, her yakınlaştırmada aynı hisseder).
+  gp() { if (!this._g) this._g = { pts: new Map(), tap: null, anchor: null, pinch: null }; return this._g; }
+  // ekrandaki (px,py) noktasının altına dünya noktası (wx,wy) gelecek şekilde kamera kaydır
+  pinTo(wx, wy, px, py) {
+    const c = this.cam, w = this.scale.width, h = this.scale.height;
+    c.scrollX = wx - (px - w / 2) / c.zoom - w / 2; c.scrollY = wy - (py - h / 2) / c.zoom - h / 2; this.clampPan();
+  }
+  reanchor() {
+    const G = this.gp(), arr = [...G.pts.values()];
+    G.pinch = null; G.anchor = null;
+    if (arr.length >= 2) {
+      const [a, b] = arr, mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, [wx, wy] = this.s2w(mx, my);
+      G.pinch = { d: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)), z: this.cam.zoom, wx, wy };
+    } else if (arr.length === 1) { const [wx, wy] = this.s2w(arr[0].x, arr[0].y); G.anchor = { wx, wy }; }
+  }
   onDown(p) {
-    const p1 = this.input.pointer1, p2 = this.input.pointer2;
-    if (p1.isDown && p2.isDown) { this.pinch = { d: Phaser.Math.Distance.Between(p1.x, p1.y, p2.x, p2.y), z: this.cam.zoom }; this.drag = null; return; }
-    this.drag = { x: p.x, y: p.y, sx: this.cam.scrollX, sy: this.cam.scrollY, moved: false, id: p.id };
+    const G = this.gp(); this.wake();
+    // takılı kalmış (kalkışı kaçırılmış) parmakları temizle
+    for (const id of [...G.pts.keys()]) { const q = this.input.manager.pointers.find(pp => pp.id === id); if (!q || !q.isDown) G.pts.delete(id); }
+    G.pts.set(p.id, { x: p.x, y: p.y });
+    if (G.pts.size === 1) G.tap = { id: p.id, x: p.x, y: p.y, moved: false };
+    else G.tap = null; // ikinci parmak: dokunma değil
+    this.reanchor();
   }
   onMove(p) {
-    const p1 = this.input.pointer1, p2 = this.input.pointer2;
-    if (this.pinch && p1.isDown && p2.isDown) {
-      const d = Phaser.Math.Distance.Between(p1.x, p1.y, p2.x, p2.y);
-      this.zoomAt((p1.x + p2.x) / 2, (p1.y + p2.y) / 2, this.pinch.z * d / this.pinch.d); return;
+    const G = this.gp(), q = G.pts.get(p.id); if (!q) return;
+    if (!p.isDown) { this.onUp(p); return; }
+    q.x = p.x; q.y = p.y;
+    if (G.tap && G.tap.id === p.id && !G.tap.moved) {
+      if (Math.hypot(p.x - G.tap.x, p.y - G.tap.y) > 9 * DPR) G.tap.moved = true; else return; // eşik geçilmeden kamera oynamaz
     }
-    if (!this.drag || !p.isDown || p.id !== this.drag.id) return;
-    const dx = p.x - this.drag.x, dy = p.y - this.drag.y;
-    if (!this.drag.moved && Math.hypot(dx, dy) > 10 * DPR) this.drag.moved = true;
-    if (this.drag.moved) { this.cam.scrollX = this.drag.sx - dx / this.cam.zoom; this.cam.scrollY = this.drag.sy - dy / this.cam.zoom; this.clampPan(); }
+    if (G.pinch && G.pts.size >= 2) {
+      const [a, b] = [...G.pts.values()], d = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
+      this.wake(); this.cam.setZoom(Phaser.Math.Clamp(G.pinch.z * d / G.pinch.d, this.minZoom(), MAXZ));
+      this.pinTo(G.pinch.wx, G.pinch.wy, (a.x + b.x) / 2, (a.y + b.y) / 2);
+    } else if (G.anchor) { this.wake(); this.pinTo(G.anchor.wx, G.anchor.wy, p.x, p.y); }
   }
   onUp(p) {
-    if (this.pinch) { if (!this.input.pointer1.isDown || !this.input.pointer2.isDown) { this.pinch = null; this.drag = null; } return; }
-    const d = this.drag; this.drag = null;
-    if (!d || d.moved || p.id !== d.id) return;
-    const [wx, wy] = this.s2w(p.x, p.y);
-    App.onTap(Hex.fromPixel(wx, wy));
+    const G = this.gp(); if (!G.pts.has(p.id)) return;
+    G.pts.delete(p.id);
+    const t = G.tap; if (t && t.id === p.id) G.tap = null;
+    if (G.pts.size === 0 && t && t.id === p.id && !t.moved) { const [wx, wy] = this.s2w(p.x, p.y); App.onTap(Hex.fromPixel(wx, wy)); return; }
+    this.reanchor();
   }
+  cancelGesture() { const G = this.gp(); G.pts.clear(); G.tap = null; G.anchor = null; G.pinch = null; }
   // --- yardımcılar ---
   hexPoly(t, r) {
     const cx = Hex.px(t), cy = Hex.py(t); r = r || Hex.R; const pts = [];
@@ -4476,7 +4527,7 @@ const UI = {
     const on = Snd.on() && !Snd.platMuted();
     this.$('tools').innerHTML =
       `<button class="${App.showYield ? 'on' : ''}" onclick="App.toggleYield()" aria-label="Verim">${ic('food', 28)}</button>` +
-      `<button onclick="App.centerSel()" aria-label="Merkez">${ic('target', 28, true)}</button>` +
+      `<button data-act="center" onclick="App.centerSel()" aria-label="${T('Ortala')}" title="${T('Ortala: seçili birim/şehir ya da başkent')}">${ic('target', 28, true)}</button>` +
       `<button onclick="UI.toggleSound()" aria-label="Ses" data-nosnd="1">${ic(on ? 'sound' : 'mute', 28, true)}</button>`;
   },
   toggleSound() {
@@ -5080,7 +5131,7 @@ const App = {
     if (s && s.type === 'unit') { const u = g.unitById(s.id); if (u) t = u.tile; }
     else if (s && s.type === 'city') { const c = g.cityById(s.id); if (c) t = c.tile; }
     else if (s && s.type === 'tile') t = s.tile;
-    if (t == null) { const c = g.citiesOf(0)[0]; t = c ? c.tile : g.s.starts[0]; }
+    if (t == null) { const c = g.cityById(g.P[0].capital) || g.citiesOf(0)[0]; const u = !c && g.unitsOf(0)[0]; t = c ? c.tile : u ? u.tile : g.s.starts[0]; }
     this.scene.centerOn(t);
   },
   toggleYield() { this.showYield = !this.showYield; this.render(); },
