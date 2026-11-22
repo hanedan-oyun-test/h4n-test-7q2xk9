@@ -6134,6 +6134,16 @@ if (_q.get('autoplay')) {
 })();
 
 </script>
+<style>/* v6.4: metin okunabilirliği */
+#top .chip.sci small{text-overflow:clip;white-space:normal;overflow:visible;line-height:1.1;overflow-wrap:break-word}#top .chip.sci .l1{min-width:0}
+.civdet{display:flex;gap:10px;align-items:flex-start;background:linear-gradient(#3a2f20,#261f15);border:2px solid #6b5531;border-left:6px solid var(--cc);border-radius:14px;padding:8px 10px;margin:4px 0 6px;color:#f6ecd6}
+.civdet img,.civdet canvas{flex:none}.civdet>div{min-width:0;flex:1}
+.civdet b{display:block;font-size:16px;line-height:1.25;overflow-wrap:break-word}
+.civdet small{display:block;font-size:14px;line-height:1.35;color:#fde6a8;margin-top:3px;overflow-wrap:break-word}
+.civc small.bn{display:none}
+.civc small,.civc b{overflow-wrap:break-word;hyphens:manual;word-break:normal}
+@media (max-width:520px){.civc{gap:6px;padding:6px 6px;min-height:60px}.civc img,.civc canvas{width:36px!important;height:36px!important;flex:none}.civc b{font-size:14px}.civc small{font-size:12px}}
+</style>
 <script>/* js/v63.js */
 // v6.3 — Civilization tarzı tur kapısı: araştırma > üretim > bekleyen birim > turu bitir
 (() => {
@@ -6280,6 +6290,39 @@ if (_q.get('autoplay')) {
 (() => {
   const dm = App.doMove;
   App.doMove = function (u, t) { const g = this.game; if (g && !g.pathTo(u, t, true)) { UI.toast(T('Oraya şu an gidilemiyor.'), 'bad'); return this.after(); } return dm.apply(this, arguments); };
+})();
+
+</script>
+<script>/* js/v64.js */
+// v6.4 — metin okunabilirliği: yeni oyun ekranında seçili medeniyetin tam açıklaması (kartlarda kesilmesin)
+(() => {
+  const esc = (t) => String(t == null ? '' : t);
+  const ngm = UI.newGameMenu;
+  UI.newGameMenu = function () {
+    // yeniden çizimde kaydırma yerini koru (seçim yapınca başa atlamasın)
+    const sc = [...document.querySelectorAll('#overlay .sheet, #overlay .modal')].map(e => e.scrollTop);
+    const r = ngm.apply(this, arguments);
+    try {
+      const box = document.querySelector('#overlay .civs'); if (!box) return r;
+      const ng = this.ngLoad(), k = D.CIVS[ng.civ] ? ng.civ : 'turk', c = D.CIVS[k];
+      box.insertAdjacentHTML('beforebegin', `<div class="civdet" style="--cc:${c.css}" aria-live="polite">${civPic(k, 52)}<div><b>${esc(c.name)} · ${esc(c.leader)}</b><small class="bn">${esc(c.bonus)}</small></div></div>`);
+      document.querySelectorAll('#overlay .sheet, #overlay .modal').forEach((e, i) => { if (sc[i]) e.scrollTop = sc[i]; });
+    } catch (e) { (window.__errors = window.__errors || []).push('v64 civdet: ' + e.message); }
+    return r;
+  };
+})();
+
+// v6.4 — bildirimler: alan dolunca en eski bildirim yarım kesik görünmesin; sığmayanlar (en eskiden başlayarak) kaldırılır
+(() => {
+  const trim = () => {
+    const box = document.getElementById('toasts'); if (!box) return;
+    const over = () => { const b = box.getBoundingClientRect(), f = box.firstElementChild.getBoundingClientRect(); return b.height > 0 && (f.top < b.top - 1 || box.scrollHeight > box.clientHeight + 1); };
+    for (let i = 0; i < 8 && box.children.length > 1 && over(); i++) box.firstElementChild.remove();
+  };
+  window.__trimToasts = trim;
+  const t0 = UI.toast;
+  UI.toast = function () { const r = t0.apply(this, arguments); trim(); return r; };
+  if (window.View && View.toastZone) { const z0 = View.toastZone; View.toastZone = function () { const r = z0.apply(this, arguments); trim(); return r; }; }
 })();
 
 </script>
