@@ -1098,7 +1098,9 @@ window.I18N_EN = {
 "Yine de bitir ⏭": "End anyway ⏭",
 "<button class=\"b s {}\" data-act=\"sentry\" onclick=\"App.sentry()\">{}Nöbet tut</button>": "<button class=\"b s {}\" data-act=\"sentry\" onclick=\"App.sentry()\">{}Sentry</button>",
 "<button class=\"b s {}\" data-act=\"skip\" onclick=\"App.skipUnit()\">{}Bu tur bekle</button>": "<button class=\"b s {}\" data-act=\"skip\" onclick=\"App.skipUnit()\">{}Skip turn</button>",
-"Oraya şu an gidilemiyor.": "Can't move there right now."
+"Oraya şu an gidilemiyor.": "Can't move there right now.",
+"Arayüzü göster":"Show interface",
+"Yalnız harita (arayüzü gizle)":"Map only (hide interface)",
 };
 
 </script>
@@ -6323,6 +6325,76 @@ if (_q.get('autoplay')) {
   const t0 = UI.toast;
   UI.toast = function () { const r = t0.apply(this, arguments); trim(); return r; };
   if (window.View && View.toastZone) { const z0 = View.toastZone; View.toastZone = function () { const r = z0.apply(this, arguments); trim(); return r; }; }
+})();
+
+</script>
+<script>/* js/v65.js */
+// v6.5 — yalnız harita görünümü: 👁 düğmesi (🎯 yanında) ya da H tuşu arayüzü geçici gizler.
+// Bu modda kaydırma/yakınlaştırma çalışır, dokunma seçim/emir vermez. Önemli bir olayda arayüz kendiliğinden geri gelir.
+// Kayda yazılmaz (yalnız App.mapView ve body.mapview sınıfı).
+(() => {
+  const EYE = (off) => `<svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="#f6ecd6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 12S5.5 5 12 5s10.5 7 10.5 7-4 7-10.5 7S1.5 12 1.5 12z"/><circle cx="12" cy="12" r="3.2" fill="#f6ecd6"/>${off ? '<path d="M3 3l18 18" stroke="#fca5a5"/>' : ''}</svg>`;
+  const tutOn = () => !!(window.Tut && Tut.active && Tut.active());
+  const ovOpen = () => { const o = document.getElementById('overlay'); return !!(o && o.firstChild); };
+  App.mapView = false;
+  App.canMapView = function () { const g = this.game; return !!g && !g.s.over && !this.busy && !ovOpen() && !tutOn() && !document.body.classList.contains('nogame'); };
+  App.setMapView = function (on, why) {
+    on = !!on; if (on && !this.canMapView()) return false;
+    if (on === this.mapView) return true;
+    this.mapView = on; this._mvWhy = on ? null : (why || 'user');
+    document.body.classList.toggle('mapview', on);
+    if (on) { this.pend = null; const tb = document.getElementById('toasts'); if (tb) tb.innerHTML = ''; }
+    UI.toolsBtn(); if (window.View && View.toastZone) try { View.toastZone(); } catch (e) {}
+    return true;
+  };
+  App.toggleMapView = function () { return this.setMapView(!this.mapView); };
+  const exit = (why) => { if (App.mapView) App.setMapView(false, why); };
+
+  // düğme: 🎯'nin hemen altında; modda araçlar sütunu sağ alta (başparmak) iner ve yalnız bu düğme kalır
+  const tb0 = UI.toolsBtn;
+  UI.toolsBtn = function () {
+    const r = tb0.apply(this, arguments);
+    try {
+      const box = this.$('tools'), c = box.querySelector('[data-act="center"]'); if (!box) return r;
+      const on = App.mapView, lbl = on ? T('Arayüzü göster') : T('Yalnız harita (arayüzü gizle)');
+      const h = `<button class="mvb ${on ? 'on' : ''}" data-act="mapview" onclick="App.toggleMapView()" aria-pressed="${on}" aria-label="${lbl}" title="${lbl} (H)" ${!on && tutOn() ? 'disabled' : ''}>${EYE(on)}</button>`;
+      if (c) c.insertAdjacentHTML('afterend', h); else box.insertAdjacentHTML('beforeend', h);
+    } catch (e) { (window.__errors = window.__errors || []).push('v65 btn: ' + e.message); }
+    return r;
+  };
+
+  // dokunma/tıklama: modda hiçbir şey seçilmez, emir verilmez
+  const tap = App.onTap;
+  App.onTap = function () { if (this.mapView) return; return tap.apply(this, arguments); };
+  const sel = App.select;
+  App.select = function (s) { if (this.mapView && s) exit('select'); return sel.apply(this, arguments); };
+
+  // kendiliğinden çıkış: tur sonu / yapay zekâ turu, pencere (olay, teklif, savaş, oyun sonu), kötü bildirim (savaş, saldırı, nöbet uyanması), öğretici, yeni oyun
+  for (const k of ['endTurn', 'newGame', 'continueGame']) { const f = App[k]; if (typeof f === 'function') App[k] = function () { exit(k); return f.apply(this, arguments); }; }
+  const md = UI.modal; UI.modal = function () { exit('modal'); return md.apply(this, arguments); };
+  const ts = UI.toast; UI.toast = function (msg, cls) { if (App.mapView && /bad|war/.test(cls || '')) exit('toast'); return ts.apply(this, arguments); };
+  const bn = UI.banner; if (bn) UI.banner = function () { exit('banner'); return bn.apply(this, arguments); };
+  if (window.Tut && Tut.start) { const st = Tut.start; Tut.start = function () { exit('tutorial'); return st.apply(this, arguments); }; }
+  new MutationObserver(() => { if (ovOpen()) exit('modal'); }).observe(document.getElementById('overlay'), { childList: true });
+  // güvenlik: oyun biterse / meşgulse / öğretici açılırsa
+  setInterval(() => { if (App.mapView && (!App.game || App.game.s.over || App.busy || tutOn() || ovOpen())) exit('state'); }, 500);
+
+  // klavye: H aç/kapa, modda Esc çıkar, Enter yok sayılır (önce arayüzü geri getir)
+  window.addEventListener('keydown', (e) => {
+    if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || /INPUT|TEXTAREA|SELECT/.test((e.target && e.target.tagName) || '')) return;
+    if (e.key === 'h' || e.key === 'H') { if (App.mapView || App.canMapView()) { e.preventDefault(); App.toggleMapView(); } return; }
+    if (App.mapView && (e.key === 'Escape' || e.key === 'Enter')) { e.preventDefault(); e.stopImmediatePropagation(); if (e.key === 'Escape') exit('esc'); }
+  }, true);
+
+  const css = document.createElement('style');
+  css.textContent = `
+body.mapview #top,body.mapview #panel,body.mapview #endwrap,body.mapview #toasts,body.mapview #banner,body.mapview #tools button:not(.mvb){display:none!important}
+body.mapview #tools{top:auto!important;bottom:calc(var(--sab,0px) + 18px)!important;right:calc(var(--sar,0px) + 14px)!important;left:auto!important}
+body.mapview #tools .mvb{opacity:.55;background:rgba(25,20,14,.55)!important}
+body.mapview #tools .mvb:hover,body.mapview #tools .mvb:focus-visible{opacity:.9}
+#tools .mvb[disabled]{opacity:.4}
+@media (orientation:portrait) and (max-width:340px){#tools{gap:6px}#tools button{width:44px;height:44px}}`;
+  document.head.appendChild(css);
 })();
 
 </script>
